@@ -4,10 +4,11 @@ require("@nomicfoundation/hardhat-toolbox");
 // project. It imports a Hardhat task definition, that can be used for
 // testing the frontend.
 require("./tasks/faucet");
+require('@openzeppelin/hardhat-upgrades');
 
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
-  solidity: "0.8.17",
+  solidity: "0.8.8",
   networks: {
     hardhat: {
       chainId: 1337 // We set 1337 to make interacting with MetaMask simpler
