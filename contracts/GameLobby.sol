@@ -1,42 +1,51 @@
-pragma solidity ^0.8.0;
-//import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
-import "@openzeppelin/contracts/utils/Address.sol";
-import "@openzeppelin/contracts/token/ERC721/ERC721.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
-//import "@openzeppelin/contracts/upgradeability/Initializable.sol";
-//import "@openzeppelin/contracts/upgradeability/InitializableAdminUpgradeabilityProxy.sol";
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.8;
 
-contract GameLobby is Ownable {
-    using Address for address;
+import "./Escrow.sol";
+
+contract GameLobby {
     address payable public developer;
     address payable public dao;
     mapping(address => bool) public players;
     address[] public playerAddresses;
     address[] public approvedTokens;
     mapping(address => uint) public playerBalances;
-    mapping(address => bytes32) public playerNames;
+    mapping(address => string) public playerNames;
     uint public gameStartTime;
     uint public gameEndTime;
     uint public timeWindow;
-    bytes32 public gameID;
-    address public winner;
-    bool public gameInProgress;
-    bool public gameEnded;
+    uint256 public gameID;
+    uint public escFee = 10;
+    address payable public winner;
     uint public minimumPlayers = 2;
     uint public maximumPlayers = 20;
-    address payable public escrow; // variable to hold the escrow address
+    uint public playerCount;
     // NFT related code
-    ERC721 public victoryNFT;
+    // ERC721 public victoryNFT;
     mapping(address => bool) public nftOwnership;
     mapping(address => bytes32) public nftMetadata;
 
+    mapping(uint256 => Escrow) escrowAddresses; // mapping to store the escrow address for each game
+    mapping(bytes32 => uint) public escrowBalances; // mapping to store the balance in the escrow for each game
+    uint public currentGameID;
+
     // events
-    event NewGame(bytes32 gameID);
-    event PlayerJoin(address player);
-    event GameStart(bytes32 gameID);
-    event GameEnd(bytes32 gameID, address winner);
+    event NewGame(uint256 gameID);
+    event PlayerJoin(address player, string playerName);
+    event GameStart(uint256 gameID);
+    event GameEnd(uint256 gameID, address winner);
     event Refund(address player, uint refund);
     event VictoryNFTIssued(address player, uint tokenId);
+    event EscrowCreated(Escrow escrow);
+    event EscrowDeposit(Escrow escrow, uint amount);
+
+    enum GameStatus {
+        PENDING,
+        STARTED,
+        FINISHED
+    }
+
+    mapping (uint256 => GameStatus) public gameStatus;
 
     constructor(address payable _developer, address payable _dao, uint _timeWindow) public {
         developer = _developer;
@@ -47,63 +56,82 @@ contract GameLobby is Ownable {
         approvedTokens.push(address(0xdAC17F958D2ee523a2206206994597C13D831ec7)); // USDC
         approvedTokens.push(address(0x8dAEBADE922dF735c38C80C7eBD708Af50815fAa)); // USDT
     }
+    function newGame(uint256 _gameID) public {
+        require(currentGameID == _gameID, "A game with that ID already exists.");
+        Escrow newEscrow = new Escrow(_gameID);
+  
+        escrowAddresses[uint256(_gameID)] = newEscrow;
+        currentGameID = _gameID;
+        emit NewGame(currentGameID);
+        emit EscrowCreated(newEscrow);
 
-    function deposit(address payable _player, bytes32 _playerName, uint _value) public payable {
+}
+
+    function deposit(address payable _player, string memory _playerName, uint256 _gameID, uint _value) public payable {
+        address payable player = _player;
+        uint256 value = _value;
+        string memory playerName = _playerName;
         require(msg.sender == _player, "Only the player themselves can make a deposit.");
-        require(players[_player] == false, "Player has already made a deposit.");
-       // require(approvedTokens[address(this).balance] == true, "Token not approved for deposit.");
+        require(players[player] == false, "Player has already made a deposit.");
+        require(gameStatus[uint256(_gameID)] == GameStatus.PENDING, "Game has already started, deposit not allowed.");
         require(_value > 0, "Deposit value must be greater than 0.");
-        playerBalances[_player] = _value;
-        players[_player] = true;
+        playerBalances[player] = _value;
+        players[player] = true;
         playerNames[_player] = _playerName;
-        playerAddresses.push(_player);
-        emit PlayerJoin(_player);
+
+        emit PlayerJoin(player, playerName);
+        playerCount++;
 
         // send the deposit to the escrow address instead of storing it in the contract
-        escrow.transfer(msg.value);
+        escrowAddresses[uint256(_gameID)].send(value);
+        escrowBalances[bytes32(_gameID)] += value;
+        emit EscrowDeposit(escrowAddresses[uint256(_gameID)], value);
     }
 
-    function startGame(bytes32 _gameID) public{
+    function startGame(uint256 _gameID) public{
         //require(msg.sender == owner, "Only the owner can start the game.");
-       // require(players.length >= minimumPlayers && players.length <= maximumPlayers, "Not enough players to start the game. Minimum 2 and maximum 20 players are required.");
-        require(gameInProgress == false, "A game is already in progress.");
-        require(gameEnded == false, "The previous game has not ended yet.");
+        require(playerCount >= minimumPlayers && playerCount <= maximumPlayers, "Not enough players to start the game. Minimum 2 and maximum 20 players are required.");
         gameID = _gameID;
         gameStartTime = block.timestamp;
         gameEndTime = gameStartTime + timeWindow;
-        gameInProgress = true;
+        gameStatus[_gameID] = GameStatus.STARTED;
         emit GameStart(_gameID);
     }
 
 
-function refund() public payable {
-    require(gameInProgress == false, "Cannot refund while game is in progress.");
-    require(gameEnded == false, "Cannot refund while game has ended.");
-    require(block.timestamp >= gameEndTime, "The game has not ended yet.");
-    for (uint i = 0; i < playerAddresses.length; i++) {
-        address player = playerAddresses[i];
-        uint refund = playerBalances[player];
-        payable(player).transfer(refund);
-        emit Refund(player, refund);
+    function refund(address payable _player) public {
+        //require(players[_player] == true, "Player has not made a deposit.");
+        require(escrowBalances[bytes32(currentGameID)] >= playerBalances[_player], "Not enough funds in escrow to refund player.");
+
+        // send the refund to the player
+        _player.transfer(playerBalances[_player]);
+        escrowBalances[bytes32(currentGameID)] -= playerBalances[_player];
+        //players[_player] = false;
+        playerBalances[_player] = 0;
+        playerNames[_player] = "";
+
+        emit Refund(_player, playerBalances[_player]);
     }
+
+    function payOutWinner(address payable _winner, uint256 _gameID) public {
+        winner = _winner;
+        gameStatus[_gameID] = GameStatus.FINISHED;
+        emit GameEnd(_gameID, _winner);
+        require(_gameID == gameID, "Invalid game ID.");
+        require(winner != address(0), "There is no winner to pay out.");
+
+        uint256 escrowBalance = escrowBalances[keccak256(abi.encodePacked(_gameID))];
+        uint256 payOutAmount = escrowBalance * 9 / 10;
+        uint256 devCut = escrowBalance * 5 / 100;
+        uint256 daoCut = escrowBalance * 5 / 100;
+        winner.transfer(payOutAmount);
+        developer.transfer(devCut);
+        dao.transfer(daoCut);
+    }
+    function getEscrowInformationByGameID(uint256 _gameID) public view returns (address, uint) {
+        Escrow escrow = escrowAddresses[uint256(_gameID)];
+        return (address(escrow), escrowBalances[bytes32(_gameID)]);
+        }
+
 }
 
-    function setWinner(bytes32 _gameID, address _winner) public {
-        require(msg.sender == developer, "Only the developer can set the winner.");
-        require(_gameID == gameID, "Invalid game ID.");
-        require(gameEnded == true, "The game has not ended yet.");
-        winner = _winner;
-        emit GameEnd(_gameID, _winner);
-    }
-
-    function issueVictoryNFT(address _winner) public {
-        require(msg.sender == developer, "Only the developer can issue victory NFTs.");
-        require(gameEnded == true, "The game has not ended yet.");
-        require(_winner == winner, "Invalid winner address.");
-        require(nftOwnership[_winner] == false, "Player already owns a victory NFT.");
-        uint tokenId = victoryNFT.mint(_winner);
-        nftOwnership[_winner] = true;
-        nftMetadata[_winner] = "Victory NFT for game ID: " + gameID;
-        emit VictoryNFTIssued(_winner, tokenId);
-        }
-    }
