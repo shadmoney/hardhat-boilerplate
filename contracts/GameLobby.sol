@@ -6,7 +6,7 @@ import "./Escrow.sol";
 contract GameLobby {
     address payable public developer;
     address payable public dao;
-    mapping(address => bool) public players;
+    //mapping(address => bool) public players;
     address[] public playerAddresses;
     address[] public approvedTokens;
     mapping(address => uint) public playerBalances;
@@ -15,6 +15,7 @@ contract GameLobby {
     uint public gameEndTime;
     uint public timeWindow;
     uint256 public gameID;
+    uint256 public betAmount;
     uint public escFee = 10;
     address payable public winner;
     uint public minimumPlayers = 2;
@@ -24,13 +25,14 @@ contract GameLobby {
     // ERC721 public victoryNFT;
     mapping(address => bool) public nftOwnership;
     mapping(address => bytes32) public nftMetadata;
+    mapping (uint256 => uint256) public betAmounts;
 
     mapping(uint256 => Escrow) escrowAddresses; // mapping to store the escrow address for each game
     mapping(bytes32 => uint) public escrowBalances; // mapping to store the balance in the escrow for each game
     uint public currentGameID;
 
     // events
-    event NewGame(uint256 gameID);
+    event NewGame(uint256 gameID, uint256 betAmount);
     event PlayerJoin(address player, string playerName);
     event GameStart(uint256 gameID);
     event GameEnd(uint256 gameID, address winner);
@@ -47,6 +49,23 @@ contract GameLobby {
 
     mapping (uint256 => GameStatus) public gameStatus;
 
+    struct Player {
+        address payable id;
+        string name;
+        bool isRegistered;
+        uint balance;
+    }
+
+    struct Game {
+        string name;
+        uint id;
+        uint betAmount;
+        address payable winner;
+    }
+
+    mapping (uint256 => Game) public games;
+    mapping (address => Player) public players;
+
     constructor(address payable _developer, address payable _dao, uint _timeWindow) public {
         developer = _developer;
         dao = _dao;
@@ -56,28 +75,35 @@ contract GameLobby {
         approvedTokens.push(address(0xdAC17F958D2ee523a2206206994597C13D831ec7)); // USDC
         approvedTokens.push(address(0x8dAEBADE922dF735c38C80C7eBD708Af50815fAa)); // USDT
     }
-    function newGame(uint256 _gameID) public {
-        require(currentGameID == _gameID, "A game with that ID already exists.");
-        Escrow newEscrow = new Escrow(_gameID);
-  
-        escrowAddresses[uint256(_gameID)] = newEscrow;
-        currentGameID = _gameID;
-        emit NewGame(currentGameID);
-        emit EscrowCreated(newEscrow);
 
+    function newGame(uint256 _gameID, uint256 _betAmount) public {
+        require(address(escrowAddresses[_gameID]) == address(0), "A game with that ID already exists.");
+        Escrow newEscrow = new Escrow(_gameID);
+        uint betAmount = _betAmount;
+
+        escrowAddresses[uint256(_gameID)] = newEscrow;
+        betAmounts[uint256(_gameID)] = betAmount;
+        currentGameID = _gameID;
+        emit NewGame(currentGameID, _betAmount);
+        emit EscrowCreated(newEscrow);
 }
 
     function deposit(address payable _player, string memory _playerName, uint256 _gameID, uint _value) public payable {
         address payable player = _player;
         uint256 value = _value;
         string memory playerName = _playerName;
+        
         require(msg.sender == _player, "Only the player themselves can make a deposit.");
-        require(players[player] == false, "Player has already made a deposit.");
+        require(msg.sender == _player, "Only the player themselves can make a deposit.");
+        require(players[player].isRegistered == false, "Player has already made a deposit.");
+        require(betAmounts[uint256(_gameID)] == _value, "Bet amount is not correct");
         require(gameStatus[uint256(_gameID)] == GameStatus.PENDING, "Game has already started, deposit not allowed.");
         require(_value > 0, "Deposit value must be greater than 0.");
-        playerBalances[player] = _value;
-        players[player] = true;
-        playerNames[_player] = _playerName;
+
+        Player storage playerData = players[player];
+        playerData.isRegistered = true;
+        playerData.balance = _value;
+        playerData.name = _playerName;
 
         emit PlayerJoin(player, playerName);
         playerCount++;
